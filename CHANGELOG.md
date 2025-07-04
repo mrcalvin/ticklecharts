@@ -253,3 +253,5 @@ replace the html template file `template.html` with a string. See [this file](ex
 ## 18-May-2025 : 3.2.7
 - Try to improve the code + error handling for `ehuddlecrit.tcl` file (Returns an error to the Tcl interpreter instead of using the Tcl_Exit(1) command).
 - Adds `elist.n` as huddle type (improves performance ++).
+## 04-Jul-2025 : 3.2.8
+- Try to fix Chrome DevTools Protocol connection issues in `SnapShot` method.

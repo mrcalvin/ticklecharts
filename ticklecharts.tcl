@@ -251,12 +251,14 @@
 # 18-May-2025 : v3.2.7
                 # Try to improve the code + error handling for `ehuddlecrit.tcl` file (Returns an error to the Tcl interpreter instead of using the Tcl_Exit(1) command).
                 # Adds `elist.n` as huddle type (improves performance ++).
+# 04-Jul-2025 : v3.2.8
+                # Try to fix Chrome DevTools Protocol connection issues in `SnapShot` method.
 
 package require Tcl 8.6-
 package require huddle 0.3
 
 namespace eval ticklecharts {
-    variable version         3.2.7 ; # ticklEcharts version
+    variable version         3.2.8 ; # ticklEcharts version
     variable echarts_version 5.5.0 ; # Echarts version    (https://echarts.apache.org/en/changelog.html#v5-5-0)
     variable gl_version      2.0.9 ; # Echarts GL version (https://github.com/ecomfe/echarts-gl)
     variable wc_version      2.1.0 ; # wordCloud version  (https://github.com/ecomfe/echarts-wordcloud)
