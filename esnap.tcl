@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024 Nicolas ROBERT.
+# Copyright (c) 2022-2025 Nicolas ROBERT.
 # Distributed under MIT license. Please see LICENSE for details.
 #
 namespace eval ticklecharts {
@@ -132,20 +132,22 @@ foreach class {
                 set jschartvar [set [my varname _jschartvar]]
 
                 # JS function.
-                if {$renderer in {png base64}} {
-                    set js [subst -nocommands {
-                        var img_${jschartvar} = new Image();
-                        img_${jschartvar}.src = ${jschartvar}.getDataURL({
-                            pixelRatio: 1,
-                            excludeComponents : [$exc]
-                        });
-                    }]
-                } else {
-                    set js [subst {
-                        var svg_${jschartvar};
-                        svg_${jschartvar} = ${jschartvar}.renderToSVGString();
-                    }]
-                }
+                set js [subst -nocommands {
+                    try {
+                        if ('$renderer' === 'svg') {
+                            var svg_${jschartvar};
+                            svg_${jschartvar} = ${jschartvar}.renderToSVGString();
+                        } else {
+                            var img_${jschartvar} = new Image();
+                            img_${jschartvar}.src = ${jschartvar}.getDataURL({
+                                pixelRatio: 1,
+                                excludeComponents : [$exc]
+                            });
+                        }
+                    } catch(e) {
+                        throw new Error('Unexpected error: ' + e.message);
+                    }
+                }]
                 
                 # A temporary file is created when the command is executed.
                 # This may change in future versions of 'ticklEcharts'
@@ -154,7 +156,7 @@ foreach class {
 
                 if {$browser != 2} {
                     set url "http://${address}:${port}/json"
-                    my ConnectLocalHost $url
+                    my ConnectLocalHost $url $htmltmpfile
                     vwait [my varname forever]
                 }
 
@@ -176,18 +178,42 @@ foreach class {
             # adress   - adress local host.
             # tempfile - full path html temporary file.
             #
+            my variable browser
+
+            if {$::tcl_platform(platform) eq "windows"} {
+                set fileUrl "file:///[string map {\\ /} $tmpfile]"
+            } else {
+                set fileUrl "file://$tmpfile"
+            }
+
             set cmd [list $exe \
                         --remote-debugging-port=$port \
                         --remote-debugging-address=$address \
-                        --headless file:///${tmpfile}]
+                        --headless=new \
+                        --disable-gpu \
+                        --no-sandbox \
+                        --allow-file-access-from-files \
+                        --disable-extensions \
+                        --disable-background-networking \
+                        $fileUrl]
 
             set f [open "|$cmd 2>@1" r]
+            fconfigure $f -blocking 0
             fileevent $f readable [callback ReadBrowser $f]
             vwait [my varname browser]
+
+            if {$browser != 1} {
+                error "error(snap): Chrome failed to start properly."
+            }
+
+            if {$::ticklecharts::snapdebug} {
+                puts stderr "DEBUG: Chrome started, \
+                    waiting before connecting..."
+            }
         }
 
         method ReadBrowser {f} {
-            # Capture sdterr, stdout '-exe' file.
+            # Capture stderr, stdout '-exe' file.
             #
             # f - open file
             #
@@ -199,8 +225,24 @@ foreach class {
                 set browser 2
             } elseif {$result >= 0} {
                 if {[string match {*ERROR:*} $line]} {
-                    puts stderr "error(snap): $line"
-                    set browser 2
+                    # Errors to ignore (specific to Edge/Chrome)
+                    if {
+                        [string match "*error code 577*" $line] ||
+                        [string match "*EDGE_IDENTITY:*" $line] ||
+                        [string match "*edge_auth_errors*" $line] ||
+                        [string match "*kImplicitSignInFailure*" $line] ||
+                        [string match "*kAccountProviderFetchError*" $line]
+                    } {
+                        if {$::ticklecharts::snapdebug} {
+                            puts stdout "Browser warning (ignored): \
+                                [string range $line 0 100]..."
+                        }
+                        set browser 1
+                    } else {
+                        # Real error
+                        puts stderr "error(snap): $line"
+                        set browser 2
+                    }
                 } elseif {[string match {*WARNING:*} $line]} {
                     if {$::ticklecharts::snapdebug} {
                         puts stdout $line
@@ -216,22 +258,62 @@ foreach class {
             }
         }
 
-        method ConnectLocalHost {url} {
+        method ConnectLocalHost {url htmltmpfile} {
             # Connection to local host.
             #
-            # url - string url
+            # url         - string url
+            # htmltmpfile - full path html temporary file
             #
+
+            if {$::ticklecharts::snapdebug} {
+                puts stderr "DEBUG: Fetching $url"
+            }
+
             set response [http::geturl $url]
             set data [http::data $response]
             http::cleanup $response
 
+            if {$::ticklecharts::snapdebug} {
+                puts stderr "DEBUG: Response data: \
+                    [string range $data 0 200]..."
+            }
+
             set pages [ticklecharts::messageToDict $data]
-            set page [lindex $pages 0]
+
+            if {$::ticklecharts::snapdebug} {
+                puts stderr "DEBUG: Found [llength $pages] pages"
+            }
+            
+            set page ""
+            foreach p $pages {
+                set pageUrl [dict get $p url]
+                if {$::ticklecharts::snapdebug} {
+                    puts stderr "DEBUG: Page - URL: $pageUrl,\
+                        Type: [dict get $p type]"
+                }
+                if {
+                    ([dict get $p type] eq "page") &&
+                    [string match "*[file tail $htmltmpfile]*" $pageUrl]
+                } {
+                    set page $p
+                    break
+                }
+            }
+
+            if {$page eq ""} {
+                error "error(snap): Could not find page\
+                    with our HTML file."
+            }
+
             set wsDebuggerUrl [dict get $page webSocketDebuggerUrl]
+            if {$::ticklecharts::snapdebug} {
+                puts stderr "DEBUG: WebSocket URL: $wsDebuggerUrl"
+            }
+
 
             set websocketUrl $wsDebuggerUrl
             set ws [websocket::open $websocketUrl [callback Handler]]
-            
+
             after 300 [callback Runtime $ws]
 
         }
@@ -276,7 +358,6 @@ foreach class {
                 catch {close $fp}
                 my CloseBrowser $sock
             }
-            
         }
 
         method Handler {sock type msg} {
@@ -341,9 +422,20 @@ foreach class {
                             set imginfo -1
                             my CloseBrowser $sock
                         }
+                    } elseif {[string match {*"id":99,"result"*} $msg]} {
+                        if {$::ticklecharts::snapdebug} {
+                            puts stderr "DEBUG PAGE INFO: $msg"
+                        }
+                    } elseif {[string match {*"exception":*} $msg]} {
+                        set d [ticklecharts::messageToDict $msg]
+                        if {[dict exists $d result result description]} {
+                            puts stderr "error(snap): [dict get $d result result description]"
+                        }
+                        set imginfo -1
+                        my CloseBrowser $sock
                     } else {
                         if {$::ticklecharts::snapdebug} {
-                            puts stdout $msg
+                            puts stderr "DEBUG INFO: $msg"
                         }
                     }
                 }
@@ -358,13 +450,48 @@ foreach class {
             # Return nothing
             my variable js
             my variable timeout
+            my variable jschartvar
 
             set conninfo [websocket::conninfo $sock state]
+
+            if {$::ticklecharts::snapdebug} {
+                puts stderr "DEBUG: Runtime - WebSocket state: $conninfo"
+            }
+
             if {$conninfo ne "CONNECTED"} {
                 puts stderr "warning(snap): [websocket::conninfo $sock state]"
                 my CloseBrowser $sock
             } else {
                 after $timeout
+                if {$::ticklecharts::snapdebug} {
+                    set debugScript [subst {
+                        JSON.stringify({
+                            url: window.location.href,
+                            title: document.title,
+                            bodyLength: document.body ? document.body.innerHTML.length : 0,
+                            scripts: Array.from(document.scripts).map(s => ({
+                                src: s.src || 'inline',
+                                loaded: s.src ? s.complete : true
+                            })),
+                            hasEcharts: typeof echarts !== 'undefined',
+                            chartVars: Object.keys(window).filter(k => k.startsWith('${jschartvar}')),
+                            echartsVersion: typeof echarts !== 'undefined' ? echarts.version : 'not loaded'
+                        })
+                    }]
+                    # Debug page info.
+                    set debugCmd [subst {
+                        {
+                            "id": 99,
+                            "method": "Runtime.evaluate",
+                            "params": {
+                                "expression": "$debugScript"
+                            }
+                        }
+                    }]
+
+                    websocket::send $sock text $debugCmd
+                    after $timeout
+                }
                 set jsonData [subst {
                     { 
                         "id": 1,
@@ -386,8 +513,20 @@ foreach class {
             # sock - websocket
             #
             # Return nothing
-            set jsonData {{"id": 1, "method": "Browser.close"}}
-            websocket::send $sock text $jsonData
+            my variable forever
+
+            if {
+                ($sock ne "") && 
+                ![catch {websocket::conninfo $sock state} state]
+            } {
+                if {$state eq "CONNECTED"} {
+                    set jsonData {{"id": 1, "method": "Browser.close"}}
+                    websocket::send $sock text $jsonData
+                }
+                websocket::close $sock
+            }
+
+            set forever 1
 
             return {}
         }
